@@ -3,6 +3,7 @@
 단순한 도형만 쓴 오리지널 디자인 - 둥근 사각형 바탕에 다운로드 화살표.
 Qt의 ICO 플러그인은 읽기 전용이라 PNG를 그린 뒤 ICO 컨테이너로 직접 싼다.
 (Vista 이후 Windows는 ICO 안에 PNG를 그대로 담는 걸 지원한다.)
+macOS 용 ICNS 도 같은 방식으로 PNG 를 그대로 담아 만든다.
 
     uv run python tools/make_icon.py
 """
@@ -26,6 +27,14 @@ from PySide6.QtGui import (
 
 SIZES = (16, 24, 32, 48, 64, 128, 256)
 OUT = Path(__file__).resolve().parent.parent / "assets" / "icon.ico"
+OUT_ICNS = OUT.with_suffix(".icns")
+
+# ICNS 항목 타입 -> 픽셀 크기. 모두 PNG 를 그대로 담을 수 있는 타입이다.
+ICNS_TYPES = {
+    b"icp4": 16, b"icp5": 32, b"icp6": 64, b"ic07": 128,
+    b"ic08": 256, b"ic09": 512, b"ic10": 1024,
+    b"ic11": 32, b"ic12": 64, b"ic13": 256, b"ic14": 512,
+}
 
 BLUE_TOP = QColor("#4d86ff")
 BLUE_BOTTOM = QColor("#1f5ae0")
@@ -120,6 +129,15 @@ def build_ico(frames: dict[int, bytes]) -> bytes:
     return bytes(header + entries + payload)
 
 
+def build_icns(frames: dict[int, bytes]) -> bytes:
+    """'icns' 헤더 + (타입, 길이, PNG) 항목들. 길이는 빅엔디언, 헤더 8바이트 포함."""
+    body = bytearray()
+    for kind, size in ICNS_TYPES.items():
+        data = frames[size]
+        body += kind + struct.pack(">I", len(data) + 8) + data
+    return b"icns" + struct.pack(">I", len(body) + 8) + bytes(body)
+
+
 def main() -> int:
     # QPainter를 쓰려면 GUI 애플리케이션이 하나 있어야 한다.
     # 소멸 순서 때문에 죽는 일이 있어 끝까지 살려둔다.
@@ -131,6 +149,10 @@ def main() -> int:
     OUT.write_bytes(build_ico(frames))
     total = OUT.stat().st_size
     print(f"{OUT}  ({total:,} bytes, {len(frames)} sizes: {', '.join(map(str, SIZES))})")
+
+    icns_frames = {size: render(size) for size in sorted(set(ICNS_TYPES.values()))}
+    OUT_ICNS.write_bytes(build_icns(icns_frames))
+    print(f"{OUT_ICNS}  ({OUT_ICNS.stat().st_size:,} bytes)")
     return 0
 
 

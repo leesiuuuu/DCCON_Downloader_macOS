@@ -6,14 +6,20 @@
 소프트웨어 OpenGL 폴백까지 딸려와 40MB 가까이 낭비된다. 그래서 수집이
 끝난 뒤 바이너리 목록에서 직접 걸러낸다.
 
-빌드 옵션은 환경변수로 받는다 (build.ps1 이 설정):
-    DCCON_ONEFILE=1   단일 exe
+빌드 옵션은 환경변수로 받는다 (build.ps1 / build.sh 가 설정):
+    DCCON_ONEFILE=1   단일 exe (Windows 전용)
     DCCON_CONSOLE=1   콘솔 창 표시 (디버깅용)
+
+macOS 에서는 onedir 결과를 `.app` 번들로 한 번 더 싼다 (dist/디시콘 다운로더.app).
+onefile `.app` 은 PyInstaller 가 더 이상 권장하지 않아 만들지 않는다.
 """
 
 import os
+import sys
 
-ONEFILE = os.environ.get("DCCON_ONEFILE") == "1"
+MACOS = sys.platform == "darwin"
+
+ONEFILE = os.environ.get("DCCON_ONEFILE") == "1" and not MACOS
 CONSOLE = os.environ.get("DCCON_CONSOLE") == "1"
 
 # 파이썬 모듈 단계에서 빼는 것들
@@ -44,6 +50,14 @@ DROP_BINARIES = (
     "qt6websockets", "qt6webchannel", "qt6nfc", "qt6help", "qt6webengine",
     "qt6labs", "opengl32sw",
 )
+# macOS 는 Qt 가 `QtQuick.framework` 같은 프레임워크로 들어와 위 이름에 안 걸린다.
+#   virtualkeyboard 입력 플러그인이 Quick/Qml 을, qpdf 이미지 플러그인이 QtPdf 를
+#   끌고 오므로 플러그인째 뺀다. (imageformats 의 다른 플러그인은 건드리지 않는다.)
+if MACOS:
+    DROP_BINARIES += (
+        "qt/lib/qtquick", "qt/lib/qtqml", "qt/lib/qtpdf", "qt/lib/qtvirtualkeyboard",
+        "libqtvirtualkeyboardplugin", "imageformats/libqpdf",
+    )
 
 # 데이터 파일(플러그인 등) 중 버릴 경로 조각.
 # imageformats 는 절대 건드리면 안 된다 - GIF/JPEG 썸네일이 안 그려진다.
@@ -58,12 +72,20 @@ DROP_DATA_DIRS = (
 
 def _keep_binary(entry):
     name = entry[0].replace("\\", "/").lower()
+    # macOS 는 `QtQml -> PySide6/Qt/lib/QtQml.framework/...` 같은 SYMLINK 항목을
+    # 따로 만든다. 이름만 봐서는 안 걸리므로 링크 대상도 본다.
+    if entry[2] == "SYMLINK":
+        name += " " + entry[1].replace("\\", "/").lower()
     return not any(token in name for token in DROP_BINARIES)
 
 
 def _keep_data(entry):
     name = entry[0].replace("\\", "/").lower()
-    return not any(token in name for token in DROP_DATA_DIRS)
+    if any(token in name for token in DROP_DATA_DIRS):
+        return False
+    # macOS 프레임워크의 심볼릭 링크와 Info.plist 는 데이터로 들어온다.
+    # 바이너리만 빼면 끊어진 링크가 남으니 같은 규칙으로 걸러낸다.
+    return not (MACOS and not _keep_binary(entry))
 
 
 a = Analysis(
@@ -102,7 +124,7 @@ _common = dict(
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
-    icon="assets/icon.ico",
+    icon="assets/icon.icns" if MACOS else "assets/icon.ico",
 )
 
 if ONEFILE:
@@ -117,4 +139,27 @@ else:
     coll = COLLECT(
         exe, a.binaries, a.datas,
         strip=False, upx=False, name="dccon-downloader",
+    )
+
+if MACOS:
+    import re
+
+    # 스펙은 exec 로 돌아서 dccon 을 import 할 수 있다는 보장이 없다. 직접 읽는다.
+    __version__ = re.search(
+        r'__version__ = "([^"]+)"', open("dccon/__init__.py", encoding="utf-8").read()
+    ).group(1)
+
+    app = BUNDLE(
+        coll,
+        name="디시콘 다운로더.app",
+        icon="assets/icon.icns",
+        bundle_identifier="io.github.glglekdy.dccon-downloader",
+        version=__version__,
+        info_plist={
+            "CFBundleDisplayName": "디시콘 다운로더",
+            "CFBundleShortVersionString": __version__,
+            "NSHighResolutionCapable": True,
+            # 시스템 다크 모드를 따라가게 한다.
+            "NSRequiresAquaSystemAppearance": False,
+        },
     )
